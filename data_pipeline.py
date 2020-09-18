@@ -10,7 +10,7 @@ END_ID = 4
 def load_vocab(vocab_path):
     vocab = collections.OrderedDict()
     index = 0
-    for line in open(vocab_path, 'r').read().splitlines():
+    for line in tf.io.gfile.glob(vocab_path, 'r').read().splitlines():
         vocab[line.split()[0]] = index
         index += 1
     inv_vocab = {v: k for k, v in vocab.items()}

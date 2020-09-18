@@ -8,7 +8,7 @@ from layers.feed_forward import *
 from layers.layer_norm import LayerNormalization
 from utils.tf_utils import *
 
-_ROOT = os.path.abspath(os.path.dirname(__file__))
+_ROOT = "gs://kogpt2"
 LOG_DIR = _ROOT + "/log"
 
 train_step_signature = [
@@ -19,16 +19,18 @@ train_step_signature = [
 
 class Gpt2(tf.keras.Model):
 	def __init__(self, num_layers,
-	             d_model,
-	             num_heads,
-	             dff,
-	             max_seq_len,
-	             vocab_size,
-	             optimizer="adam",
-	             learning_rate=1e-3,
-	             rev_embedding_projection=True,
-	             grad_clip=False,
-	             clip_value=1.0):
+				 d_model,
+				 num_heads,
+				 dff,
+				 max_seq_len,
+				 vocab_size,
+				 global_batch_size,
+				 optimizer="adam",
+				 learning_rate=1e-3,
+				 rev_embedding_projection=True,
+				 grad_clip=False,
+				 clip_value=1.0,
+				 ):
 		super(Gpt2, self).__init__()
 
 		self.rev_embedding_projection = rev_embedding_projection
@@ -43,6 +45,7 @@ class Gpt2(tf.keras.Model):
 		self.mirrored_strategy = None
 		self.grad_clip = grad_clip
 		self.clip_value = clip_value
+		self.batch_size = global_batch_size
 
 		self.embedding = EmbeddingLayer(
 			self.vocab_size, self.d_model)
@@ -51,7 +54,7 @@ class Gpt2(tf.keras.Model):
 			self.max_seq_len, self.d_model)
 
 		self.decoder_layers = [DecoderLayer(self.d_model, self.num_heads, self.dff)
-		                       for _ in range(self.num_layers)]
+							   for _ in range(self.num_layers)]
 		self.layer_norm = LayerNormalization(self.d_model)
 
 		if not self.rev_embedding_projection:
@@ -115,7 +118,7 @@ class Gpt2(tf.keras.Model):
 		with tf.name_scope("optimizer"):
 			if optimizer == "adam":
 				self.optimizer = tf.keras.optimizers.Adam(self.learning_rate, beta_1=0.9, beta_2=0.98,
-				                                          epsilon=1e-9)
+														  epsilon=1e-9)
 			elif optimizer == "adadelta":
 				self.optimizer = tf.keras.optimizers.Adadelta(self.learning_rate)
 			elif optimizer == "rms":
@@ -177,7 +180,7 @@ class Gpt2(tf.keras.Model):
 			gradients = tape.gradient(loss, self.trainable_variables)
 			if self.grad_clip:
 				gradients = [(tf.clip_by_value(grad, -self.clip_value, self.clip_value))
-				             for grad in gradients]
+							 for grad in gradients]
 			self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
 		perplexity = self.get_perplexity(loss)
@@ -204,13 +207,13 @@ class Gpt2(tf.keras.Model):
 			with tf.GradientTape() as tape:
 				logits, _ = self(inp, training=True)
 				cross_entropy = self.get_loss(tar, logits)
-				loss = tf.reduce_sum(cross_entropy) * (1.0 / self.btach_size)  # Divided By Global Batch Size
+				loss = tf.reduce_sum(cross_entropy) * (1.0 / self.batch_size)  # Divided By Global Batch Size
 
 			with tf.name_scope("gradients"):
 				gradients = tape.gradient(loss, self.trainable_variables)
 				if self.grad_clip:
 					gradients = [(tf.clip_by_value(grad, -self.clip_value, self.clip_value))
-					             for grad in gradients]
+								 for grad in gradients]
 				self.optimizer.apply_gradients(list(zip(gradients, self.trainable_variables)))
 			return cross_entropy
 
@@ -218,7 +221,7 @@ class Gpt2(tf.keras.Model):
 			step_fn, args=(inputs, targets))
 
 		mean_loss = self.mirrored_strategy.reduce(
-			tf.distribute.ReduceOp.MEAN, per_example_losses, axis=0)
+			tf.distribute.ReduceOp.SUM, per_example_losses, axis=0)
 		# If you get error in distributed mode try using SUM instead of MEAN.
 
 		perplexity = self.get_perplexity(mean_loss)
@@ -236,7 +239,7 @@ class Gpt2(tf.keras.Model):
 			step_fn, args=(inputs, targets))
 
 		mean_loss = self.mirrored_strategy.reduce(
-			tf.distribute.ReduceOp.MEAN, per_example_losses, axis=0)
+			tf.distribute.ReduceOp.SUM, per_example_losses, axis=0)
 		# If you get error in distributed mode try using SUM instead of MEAN.
 		perplexity = self.get_perplexity(mean_loss)
 
@@ -264,13 +267,13 @@ class Gpt2(tf.keras.Model):
 	def get_distributed_train_test_function(self, graph_mode=False):
 		if graph_mode:
 			print("Running in graph mode.............")
-			test_fuc = self._distributed_train_step
-			train_fuc = self._distributed_test_step
+			train_func = self._distributed_train_step
+			test_func = self._distributed_test_step
 		else:
 			print("Running in eager mode.............")
-			test_fuc = self.distributed_train_step
-			train_fuc = self.distributed_test_step
-		return train_fuc, test_fuc
+			train_func = self.distributed_train_step
+			test_func = self.distributed_test_step
+		return train_func, test_func
 
 	def fit(self, train_dataset, graph_mode):
 		if self.mirrored_strategy is None:
@@ -280,9 +283,9 @@ class Gpt2(tf.keras.Model):
 				step, loss, perplexity = train_func(inputs, targets)
 				if step % 100 == 0:
 					self.log_summary(self.train_writer,
-					                 step.numpy(),
-					                 loss.numpy(),
-					                 perplexity.numpy())
+									 step,
+									 loss.get_static_value(),
+									 perplexity.get_static_value())
 
 				if step == 0:
 					with self.train_writer.as_default():
@@ -306,26 +309,27 @@ class Gpt2(tf.keras.Model):
 					test_perplexity = np.mean(np.array(perplexities))
 
 					self.log_summary(self.test_writer,
-					                 step.numpy(),
-					                 test_loss,
-					                 test_perplexity,
-					                 result_type="Test")
+									 step.numpy(),
+									 test_loss,
+									 test_perplexity,
+									 result_type="Test")
 
 					ckpt_save_path = self.ckpt_manager.save()
 					print('Saving checkpoint for step {} at {}'.format(step.numpy(),
-					                                                   ckpt_save_path))
+																	   ckpt_save_path))
 		else:
 			with self.mirrored_strategy.scope():
-				train_func, test_func = self.get_train_test_function(graph_mode)
+				train_func, test_func = self.get_distributed_train_test_function(graph_mode)
 				tf.summary.trace_on(graph=True, profiler=False)
 				for (step, (inputs, targets)) in enumerate(train_dataset):
 					step, loss, perplexity = train_func(inputs, targets)
 
 					if step % 100 == 0:
+						print(tf.math.reduce_sum(loss), tf.math.reduce_sum(perplexity))
 						self.log_summary(self.train_writer,
-						                 step,
-						                 loss,
-						                 perplexity)
+										 step,
+										 loss,
+										 perplexity)
 
 					if step == 0:
 						with self.train_writer.as_default():
@@ -338,7 +342,7 @@ class Gpt2(tf.keras.Model):
 						losses = []
 						perplexities = []
 						for (test_step, (test_inputs, test_targets)) in enumerate(train_dataset):
-							test_loss, test_perplexity = test_func(test_inputs, test_targets)
+							test_step, test_loss, test_perplexity = test_func(test_inputs, test_targets)
 							losses.append(test_loss)
 							perplexities.append(test_perplexity)
 
@@ -349,14 +353,14 @@ class Gpt2(tf.keras.Model):
 						test_perplexity = np.mean(np.array(perplexities))
 
 						self.log_summary(self.test_writer,
-						                 step,
-						                 test_loss,
-						                 test_perplexity,
-						                 result_type="Test")
+										 step,
+										 test_loss,
+										 test_perplexity,
+										 result_type="Test")
 
 						ckpt_save_path = self.ckpt_manager.save()
 						print('Saving checkpoint for step {} at {}'.format(step.numpy(),
-						                                                   ckpt_save_path))
+																		   ckpt_save_path))
 
 	@staticmethod
 	def log_summary(tf_writer, step, loss, perplexity, result_type="Train"):
@@ -399,7 +403,7 @@ class OutputLayer(tf.keras.layers.Layer):
 
 class DecoderLayer(tf.keras.layers.Layer):
 	def __init__(self, d_model, num_heads, dff,
-	             dr_rate=0.1):
+				 dr_rate=0.1):
 		super(DecoderLayer, self).__init__()
 		self.d_model = d_model
 		self.num_heads = num_heads
@@ -413,7 +417,7 @@ class DecoderLayer(tf.keras.layers.Layer):
 
 	def call(self, x, training, mask, past=None):
 		out, present = self.mha(self.layer_norm1(x), mask=mask, past_layer=past,
-		                        training=training)  # (batch_size, input_seq_len, d_model)
+								training=training)  # (batch_size, input_seq_len, d_model)
 		with tf.name_scope("residual_conn"):
 			x = x + out
 		out = self.feed_forward(self.layer_norm2(x), training=training)  # (batch_size, input_seq_len, d_model)

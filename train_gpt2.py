@@ -4,7 +4,7 @@ import click
 from data_pipeline import input_fn
 from gpt2_model import *
 
-_ROOT = os.path.abspath(os.path.dirname(__file__))
+_ROOT = "gs://kogpt2"
 LOG_DIR = _ROOT + "/log"
 MODEL_DIR = _ROOT + "/model"
 
@@ -23,43 +23,46 @@ MODEL_DIR = _ROOT + "/model"
 @click.option('--distributed', type=bool, default=False, show_default=True, help="distributed training")
 def train(num_layers, embedding_size, num_heads, dff, max_seq_len, vocab_size,
           optimizer, batch_size, learning_rate, graph_mode, distributed):
-	par_map = {"num_layers": num_layers, "d_model": embedding_size,
-	           "num_heads": num_heads, "dff": dff,
-	           "max_seq_len": max_seq_len, "vocab_size": vocab_size}
+    par_map = {"num_layers": num_layers, "d_model": embedding_size,
+               "num_heads": num_heads, "dff": dff,
+               "max_seq_len": max_seq_len, "vocab_size": vocab_size}
 
-	# exp_name = "_".join(['{}_{}'.format(k, v) for k, v in par_map.items()])
+    # exp_name = "_".join(['{}_{}'.format(k, v) for k, v in par_map.items()])
 
-	if not os.path.exists(MODEL_DIR):
-		os.makedirs(MODEL_DIR)
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
 
-	with open(MODEL_DIR + '/model_par.json', 'w') as f:
-		json.dump(par_map, f)
+    with tf.io.gfile.GFile(MODEL_DIR + '/model_par.json', 'w') as f:
+        json.dump(par_map, f)
 
-	tf_records = glob.glob((_ROOT + "/data/tf_records/*.tfrecord"))
-	if distributed:
-		dist_dataset = input_fn(tf_records, batch_size=batch_size)
-		mirrored_strategy = tf.distribute.MirroredStrategy(devices=["/gpu:0", "/gpu:1"])
-		dist_dataset = mirrored_strategy.experimental_distribute_dataset(dist_dataset)
-		with mirrored_strategy.scope():
+    tf_records = tf.io.gfile.glob(_ROOT + "/data/tf_records/*")
+    if distributed:
+        dist_dataset = input_fn(tf_records, batch_size=batch_size)
+        resolver = tf.distribute.cluster_resolver.TPUClusterResolver(tpu='v2')
+        tf.config.experimental_connect_to_cluster(resolver)
+        context = tf.tpu.experimental.initialize_tpu_system(resolver)
+        mirrored_strategy = tf.distribute.experimental.TPUStrategy(resolver)
+        dist_dataset = mirrored_strategy.experimental_distribute_dataset(dist_dataset)
+        with mirrored_strategy.scope():
+            global_batch_size = 8
+            model = Gpt2(num_layers, embedding_size, num_heads, dff, max_seq_len, vocab_size, global_batch_size,
+                         optimizer=optimizer, learning_rate=learning_rate)
+            model.create_optimizer()
+            model.create_checkpoint_manager(MODEL_DIR)
+            model.create_summary_writer(LOG_DIR)
 
-			model = Gpt2(num_layers, embedding_size, num_heads, dff, max_seq_len, vocab_size,
-			             optimizer=optimizer, learning_rate=learning_rate)
-			model.create_optimizer()
-			model.create_checkpoint_manager(MODEL_DIR)
-			model.create_summary_writer(LOG_DIR)
-
-		model.mirrored_strategy = mirrored_strategy
-		model.fit(dist_dataset, graph_mode)
-	else:
-		dataset = input_fn(tf_records, batch_size=batch_size)
-		model = Gpt2(num_layers, embedding_size, num_heads, dff, max_seq_len, vocab_size,
-		             optimizer=optimizer, learning_rate=learning_rate)
-		model.create_optimizer()
-		model.create_checkpoint_manager(MODEL_DIR)
-		model.create_summary_writer(LOG_DIR)
-		model.fit(dataset, graph_mode)
-		print("Training Done................")
+        model.mirrored_strategy = mirrored_strategy
+        model.fit(dist_dataset, graph_mode)
+    else:
+        dataset = input_fn(tf_records, batch_size=batch_size)
+        model = Gpt2(num_layers, embedding_size, num_heads, dff, max_seq_len, vocab_size,
+                     optimizer=optimizer, learning_rate=learning_rate)
+        model.create_optimizer()
+        model.create_checkpoint_manager(MODEL_DIR)
+        model.create_summary_writer(LOG_DIR)
+        model.fit(dataset, graph_mode)
+        print("Training Done................")
 
 
 if __name__ == "__main__":
-	train()
+    train()
