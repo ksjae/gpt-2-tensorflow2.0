@@ -21,7 +21,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
     def multihead_attention(self, q, k, v, training, mask=None):
         matmul_qk = tf.matmul(q, k, transpose_b=True)  # (..., seq_len_q, seq_len_k)
         if self.scale:
-            dk = tf.cast(tf.shape(k)[-1], tf.float32)
+            dk = tf.cast(tf.shape(k)[-1], tf.bfloat16)
             matmul_qk = matmul_qk / tf.math.sqrt(dk)
 
         if mask is not None:
@@ -33,7 +33,7 @@ class MultiHeadAttention(tf.keras.layers.Layer):
             attention_weights = tf.nn.dropout(attention_weights, rate=self.att_dropout, name="attn_dropout")
         output = tf.matmul(attention_weights, v)  # (..., seq_len_q, depth_v)
 
-        return output, attention_weights
+        return tf.cast(output,tf.float32), tf.cast(attention_weights,tf.float32)
 
     def split_heads(self, x):
         batch_size = tf.shape(x)[0]

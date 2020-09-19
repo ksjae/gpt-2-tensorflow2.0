@@ -22,7 +22,7 @@ class LayerNormalization(tf.keras.layers.Layer):
             experimental_autocast=False)
         super(LayerNormalization, self).build(input_shape)
 
-    def call(self, x, epsilon=1e-6, input_dtype=tf.float32):
+    def call(self, x, epsilon=1e-6, input_dtype=tf.bfloat16):
         mean = tf.reduce_mean(x, axis=[-1], keepdims=True)
         variance = tf.reduce_mean(tf.square(x - mean), axis=[-1], keepdims=True)
         normalized = (x - mean) * tf.math.rsqrt(variance + epsilon)

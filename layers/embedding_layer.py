@@ -36,7 +36,7 @@ class EmbeddingLayer(tf.keras.layers.Layer):
     def embedding(self, inputs, scale=False):
         with tf.name_scope("embedding"):
             # Create binary mask of size [batch_size, length]
-            mask = tf.cast(tf.not_equal(inputs, 0), tf.float32)
+            mask = tf.cast(tf.not_equal(inputs, 0), tf.bfloat16)
             inputs = tf.cast(inputs, tf.int32)
             embeddings = tf.nn.embedding_lookup(self.embedding_weights, inputs)
             embeddings *= tf.expand_dims(mask, -1)
@@ -44,7 +44,7 @@ class EmbeddingLayer(tf.keras.layers.Layer):
             if scale:
                 embeddings *= self.embedding_size ** 0.5
 
-            return embeddings
+            return tf.cast(embeddings, tf.float32)
 
     def projection(self, inputs):
         with tf.name_scope("output_layer"):
@@ -90,13 +90,13 @@ class PositionEmbeddingLayer(tf.keras.layers.Layer):
 
     @staticmethod
     def get_position_sinusoid(seq_len, hidden_size, min_timescale=1.0, max_timescale=1.0e4):
-        position = tf.cast(tf.range(seq_len), tf.float32)
+        position = tf.cast(tf.range(seq_len), tf.bfloat16)
         num_timescales = hidden_size // 2
         log_timescale_increment = (
                 math.log(float(max_timescale) / float(min_timescale)) /
-                (tf.cast(num_timescales, tf.float32) - 1))
+                (tf.cast(num_timescales, tf.bfloat16) - 1))
         inv_timescales = min_timescale * tf.exp(
-            tf.cast(tf.range(num_timescales), tf.float32) * -log_timescale_increment)
+            tf.cast(tf.range(num_timescales), tf.bfloat16) * -log_timescale_increment)
         scaled_time = tf.expand_dims(position, 1) * tf.expand_dims(inv_timescales, 0)
         signal = tf.concat([tf.sin(scaled_time), tf.cos(scaled_time)], axis=1)
         return signal

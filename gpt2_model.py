@@ -102,16 +102,16 @@ class Gpt2(tf.keras.Model):
 	@staticmethod
 	def get_padded_accuracy(labels, logits):
 		with tf.name_scope("padded_accuracy"):
-			weights = tf.cast(tf.not_equal(labels, 0), tf.float32)
+			weights = tf.cast(tf.not_equal(labels, 0), tf.bfloat16)
 
 			outputs = tf.cast(tf.argmax(logits, axis=-1), tf.int32)
 			padded_labels = tf.cast(labels, tf.int32)
 
-			nonpad_seq = tf.math.count_nonzero(weights, dtype=tf.dtypes.float32, )
-			acc = tf.cast(tf.equal(outputs, padded_labels), tf.float32)
+			nonpad_seq = tf.math.count_nonzero(weights, dtype=tf.dtypes.bfloat16, )
+			acc = tf.cast(tf.equal(outputs, padded_labels), tf.bfloat16)
 
-			accuracy = tf.reduce_sum(tf.cast(acc * weights, tf.float32)) / nonpad_seq
-			return tf.cast(accuracy, tf.float32)
+			accuracy = tf.reduce_sum(tf.cast(acc * weights, tf.bfloat16)) / nonpad_seq
+			return tf.cast(accuracy, tf.bfloat16)
 
 	def create_optimizer(self):
 		optimizer = self.optimizer_t.lower()
@@ -221,7 +221,7 @@ class Gpt2(tf.keras.Model):
 			step_fn, args=(inputs, targets))
 
 		mean_loss = self.mirrored_strategy.reduce(
-			tf.distribute.ReduceOp.SUM, per_example_losses, axis=0)
+			tf.distribute.ReduceOp.MEAN, per_example_losses, axis=0)
 		# If you get error in distributed mode try using SUM instead of MEAN.
 
 		perplexity = self.get_perplexity(mean_loss)
@@ -239,7 +239,7 @@ class Gpt2(tf.keras.Model):
 			step_fn, args=(inputs, targets))
 
 		mean_loss = self.mirrored_strategy.reduce(
-			tf.distribute.ReduceOp.SUM, per_example_losses, axis=0)
+			tf.distribute.ReduceOp.MEAN, per_example_losses, axis=0)
 		# If you get error in distributed mode try using SUM instead of MEAN.
 		perplexity = self.get_perplexity(mean_loss)
 
@@ -364,8 +364,7 @@ class Gpt2(tf.keras.Model):
 
 	@staticmethod
 	def log_summary(tf_writer, step, loss, perplexity, result_type="Train"):
-		print(result_type + ':- Step {}, Loss {:.4f}, Perplexity {:.4f}'.format(
-			step, loss, perplexity))
+		print(result_type + ':- Step',step,'Loss {:.4f}',loss,'Perplexity {:.4f}',perplexity)
 		with tf_writer.as_default():
 			tf.summary.scalar("loss", loss, step=step)
 			tf.summary.scalar("perplexity", perplexity, step=step)
@@ -416,7 +415,7 @@ class DecoderLayer(tf.keras.layers.Layer):
 		self.layer_norm2 = LayerNormalization(self.d_model)
 
 	def call(self, x, training, mask, past=None):
-		out, present = self.mha(self.layer_norm1(x), mask=mask, past_layer=past,
+		out, present = self.mha(self.layer_norm1(x), mask=tf.cast(mask, tf.bfloat16), past_layer=past,
 								training=training)  # (batch_size, input_seq_len, d_model)
 		with tf.name_scope("residual_conn"):
 			x = x + out
